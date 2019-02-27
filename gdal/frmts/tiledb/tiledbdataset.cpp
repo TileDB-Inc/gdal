@@ -86,6 +86,7 @@ class TileDBRasterBand : public GDALPamRasterBand
     friend class TileDBDataset;
     protected:
         TileDBDataset  *poGDS;
+        CPLErr SetBuffer( tiledb::Query& query, GDALDataType eType, void * pImage, int nSize );
     public:
         TileDBRasterBand( TileDBDataset *, int );
         virtual ~TileDBRasterBand();
@@ -120,14 +121,89 @@ TileDBRasterBand::~TileDBRasterBand()
     FlushCache();
 }
 
+
+/************************************************************************/
+/*                             SetBuffer()                              */
+/************************************************************************/
+
+CPLErr TileDBRasterBand::SetBuffer( tiledb::Query& query, GDALDataType eType, void * pImage, int nSize )
+{
+ switch (eDataType)
+    {
+        case GDT_Byte:
+            query.set_buffer( TILEDB_VALUES, reinterpret_cast<unsigned char*>( pImage ), nSize );
+            break;
+        case GDT_UInt16:
+            query.set_buffer( TILEDB_VALUES, reinterpret_cast<unsigned short*>( pImage ), nSize );
+            break;
+        case GDT_UInt32:
+            query.set_buffer( TILEDB_VALUES, reinterpret_cast<unsigned int*>( pImage ), nSize );
+            break;
+        case GDT_Int16:
+            query.set_buffer( TILEDB_VALUES, reinterpret_cast<short*>( pImage ), nSize );
+            break;
+        case GDT_Int32:
+            query.set_buffer( TILEDB_VALUES, reinterpret_cast<int*>( pImage ), nSize );
+            break;
+        case GDT_Float32:
+            query.set_buffer( TILEDB_VALUES, reinterpret_cast<float*>( pImage ), nSize );
+            break;
+        case GDT_Float64:
+            query.set_buffer( TILEDB_VALUES, reinterpret_cast<double*>( pImage ), nSize );
+            break;
+        case GDT_CInt16:
+            query.set_buffer( TILEDB_VALUES, reinterpret_cast<short*>( pImage ), nSize );
+            break;
+        case GDT_CInt32:
+            query.set_buffer( TILEDB_VALUES, reinterpret_cast<int*>( pImage ), nSize );
+            break;
+        case GDT_CFloat32:
+            query.set_buffer( TILEDB_VALUES, reinterpret_cast<float*>( pImage ), nSize );
+            break;
+        case GDT_CFloat64:
+            query.set_buffer( TILEDB_VALUES, reinterpret_cast<double*>( pImage ), nSize );
+            break;
+        default:
+            return CE_Failure;
+    }
+    return CE_None;
+}
+
 /************************************************************************/
 /*                             IReadBlock()                             */
 /************************************************************************/
 
-CPLErr TileDBRasterBand::IReadBlock( CPL_UNUSED int nBlockXOff, int nBlockYOff,
+CPLErr TileDBRasterBand::IReadBlock( int nBlockXOff, int nBlockYOff,
                                    void * pImage )
 {
-    return CE_None;
+    tiledb::Query query( *poGDS->m_ctx, *poGDS->m_array );
+
+    size_t nStartX = nBlockXOff * nBlockXSize;
+    size_t nStartY = nBlockYOff * nBlockYSize;
+
+    query.set_layout( TILEDB_ROW_MAJOR );   
+    std::vector<size_t> subarray = { nStartX, nStartX + nBlockXSize - 1, 
+                                     nStartY, nStartY + nBlockYSize - 1,
+                                     nBand, nBand };
+
+    SetBuffer(query, eDataType, pImage, nBlockXSize * nBlockYSize);
+    query.set_subarray(subarray);
+
+    if ( poGDS->bStats )
+        tiledb::Stats::enable();
+
+    auto status = query.submit();
+
+    if ( poGDS->bStats )
+    {
+        tiledb::Stats::dump(stdout);
+        tiledb::Stats::disable();
+    }
+
+    if (status != tiledb::Query::Status::COMPLETE)
+        return CE_Failure;
+    else
+        return CE_None;
 }
 
 /************************************************************************/
@@ -160,44 +236,7 @@ CPLErr TileDBRasterBand::IWriteBlock( int nBlockXOff, int nBlockYOff,
                                      nBand, nBand };
     query.set_subarray(subarray);
 
-    switch (eDataType)
-    {
-        case GDT_Byte:
-            query.set_buffer( TILEDB_VALUES, reinterpret_cast<unsigned char*>( pImage ), nBlockXSize * nBlockYSize );
-            break;
-        case GDT_UInt16:
-            query.set_buffer( TILEDB_VALUES, reinterpret_cast<unsigned short*>( pImage ), nBlockXSize * nBlockYSize );
-            break;
-        case GDT_UInt32:
-            query.set_buffer( TILEDB_VALUES, reinterpret_cast<unsigned int*>( pImage ), nBlockXSize * nBlockYSize );
-            break;
-        case GDT_Int16:
-            query.set_buffer( TILEDB_VALUES, reinterpret_cast<short*>( pImage ), nBlockXSize * nBlockYSize );
-            break;
-        case GDT_Int32:
-            query.set_buffer( TILEDB_VALUES, reinterpret_cast<int*>( pImage ), nBlockXSize * nBlockYSize );
-            break;
-        case GDT_Float32:
-            query.set_buffer( TILEDB_VALUES, reinterpret_cast<float*>( pImage ), nBlockXSize * nBlockYSize );
-            break;
-        case GDT_Float64:
-            query.set_buffer( TILEDB_VALUES, reinterpret_cast<double*>( pImage ), nBlockXSize * nBlockYSize );
-            break;
-        case GDT_CInt16:
-            query.set_buffer( TILEDB_VALUES, reinterpret_cast<short*>( pImage ), nBlockXSize * nBlockYSize );
-            break;
-        case GDT_CInt32:
-            query.set_buffer( TILEDB_VALUES, reinterpret_cast<int*>( pImage ), nBlockXSize * nBlockYSize );
-            break;
-        case GDT_CFloat32:
-            query.set_buffer( TILEDB_VALUES, reinterpret_cast<float*>( pImage ), nBlockXSize * nBlockYSize );
-            break;
-        case GDT_CFloat64:
-            query.set_buffer( TILEDB_VALUES, reinterpret_cast<double*>( pImage ), nBlockXSize * nBlockYSize );
-            break;
-        default:
-            return CE_Failure;
-    }
+    SetBuffer(query, eDataType, pImage, nBlockXSize * nBlockYSize);
 
     if ( poGDS->bStats )
         tiledb::Stats::enable();
@@ -225,6 +264,9 @@ CPLErr TileDBRasterBand::IWriteBlock( int nBlockXOff, int nBlockYOff,
 GDALColorInterp TileDBRasterBand::GetColorInterpretation()
 
 {
+    if (poGDS->nBands == 1)
+        return GCI_GrayIndex;
+
     if ( nBand == 1 )
         return GCI_RedBand;
 
@@ -384,7 +426,7 @@ GDALDataset *TileDBDataset::Open( GDALOpenInfo * poOpenInfo )
     poDS->nRasterXSize = ( pszXSize ) ? atoi( pszXSize ) : 8;
 
     const char* pszYSize = poDS->GetMetadataItem( "Y_SIZE", "IMAGE_STRUCTURE" );
-    poDS->nRasterXSize = ( pszYSize ) ? atoi( pszYSize ) : 8;
+    poDS->nRasterYSize = ( pszYSize ) ? atoi( pszYSize ) : 8;
 
     const char* pszNBits = poDS->GetMetadataItem( "NBITS", "IMAGE_STRUCTURE" );
     poDS->nBitsPerSample = ( pszNBits ) ? atoi( pszNBits ) : 8;
