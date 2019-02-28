@@ -65,3 +65,18 @@ def test_tiff_write_custom_blocksize():
     new_ds = None
 
     gdaltest.tiledb_drv.Delete('tmp/tiledb_custom')
+
+def test_tiff_write_rgb():
+    gdaltest.tiledb_drv = gdal.GetDriverByName('TileDB')
+
+    src_ds = gdal.Open('data/rgbsmall.tif')
+
+    new_ds = gdaltest.tiledb_drv.CreateCopy('tmp/tiledb_rgb', src_ds)
+
+    assert new_ds.RasterCount == 3, 'Didnt get expected band count'
+    bnd = new_ds.GetRasterBand(2)
+    assert bnd.Checksum() == 21053, 'Didnt get expected checksum on still-open file'
+
+    new_ds = None
+
+    gdaltest.tiledb_drv.Delete('tmp/tiledb_rgb')    
