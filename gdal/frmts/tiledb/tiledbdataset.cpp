@@ -53,7 +53,6 @@ class TileDBDataset : public GDALPamDataset
 
     protected:
         uint16      nBitsPerSample = 8;
-        uint16      nSampleFormat = SAMPLEFORMAT_UINT;
         GDALDataType eDataType = GDT_Byte;
         int         nBlockXSize = -1;
         int         nBlockYSize = -1;
@@ -70,6 +69,7 @@ class TileDBDataset : public GDALPamDataset
 
         static GDALDataset *Open( GDALOpenInfo * );
         static int          Identify( GDALOpenInfo * );
+        static CPLErr       Delete( const char * pszFilename );	
         static GDALDataset *Create( const char * pszFilename,
                                 int nXSize, int nYSize, int nBands,
                                 GDALDataType eType, char ** papszParmList );
@@ -155,13 +155,13 @@ CPLErr TileDBRasterBand::SetBuffer( tiledb::Query& query, GDALDataType eType, vo
             query.set_buffer( TILEDB_VALUES, reinterpret_cast<short*>( pImage ), nSize );
             break;
         case GDT_CInt32:
-            query.set_buffer( TILEDB_VALUES, reinterpret_cast<int*>( pImage ), nSize );
+            query.set_buffer( TILEDB_VALUES, reinterpret_cast<int*>( pImage ), nSize * 2);
             break;
         case GDT_CFloat32:
-            query.set_buffer( TILEDB_VALUES, reinterpret_cast<float*>( pImage ), nSize );
+            query.set_buffer( TILEDB_VALUES, reinterpret_cast<float*>( pImage ), nSize * 2);
             break;
         case GDT_CFloat64:
-            query.set_buffer( TILEDB_VALUES, reinterpret_cast<double*>( pImage ), nSize );
+            query.set_buffer( TILEDB_VALUES, reinterpret_cast<double*>( pImage ), nSize * 2);
             break;
         default:
             return CE_Failure;
@@ -324,12 +324,32 @@ CPLErr TileDBDataset::AddFilter( const char* pszFilterName, const int level )
     else if EQUAL(pszFilterName, "DOUBLE-DELTA")
         m_filterList->add_filter( tiledb::Filter( *m_ctx, TILEDB_FILTER_DOUBLE_DELTA )
             .set_option( TILEDB_COMPRESSION_LEVEL, level ) );
+    else if EQUAL(pszFilterName, "POSITIVE-DELTA")
+        m_filterList->add_filter( tiledb::Filter( *m_ctx, TILEDB_FILTER_POSITIVE_DELTA )
+            .set_option( TILEDB_COMPRESSION_LEVEL, level ) );
     else
         return CE_Failure;
     
     return CE_None;
 }
 
+/************************************************************************/
+/*                              Delete()                                */
+/************************************************************************/
+
+CPLErr TileDBDataset::Delete( const char * pszFilename )
+
+{
+    tiledb::Context ctx;
+    tiledb::VFS vfs(ctx);
+    if ( vfs.is_dir( pszFilename ) )
+    {
+        vfs.remove_dir( pszFilename );
+        return CE_None;
+    }
+    else
+        return CE_Failure;
+}
 
 /************************************************************************/
 /*                              Identify()                              */
@@ -348,8 +368,7 @@ int TileDBDataset::Identify( GDALOpenInfo * poOpenInfo )
 
         CPLString osAux;
         osAux.Printf( "%s.tdb.aux.xml", pszArrayName );        
-
-        if( CSLFindString( papszSiblingFiles, osAux ) )
+        if( CSLFindString( papszSiblingFiles, osAux ) != -1 )
         {
             return TRUE;
         }
@@ -431,55 +450,15 @@ GDALDataset *TileDBDataset::Open( GDALOpenInfo * poOpenInfo )
     const char* pszNBits = poDS->GetMetadataItem( "NBITS", "IMAGE_STRUCTURE" );
     poDS->nBitsPerSample = ( pszNBits ) ? atoi( pszNBits ) : 8;
 
-    const char* pszSampleFormat = poDS->GetMetadataItem( "SAMPLEFORMAT", "TIFF" );
-    poDS->nSampleFormat = ( pszSampleFormat ) ? atoi( pszSampleFormat ) : SAMPLEFORMAT_UINT;
+    const char* pszDataType = poDS->GetMetadataItem( "DATA_TYPE", "IMAGE_STRUCTURE" );
+    poDS->eDataType = ( pszDataType ) ? static_cast<GDALDataType>( atoi( pszDataType ) ) : GDT_Unknown;
+
+    poDS->eAccess = poOpenInfo->eAccess;
 
     // Create band information objects.
     for ( int i = 1; i <= poDS->nBands; ++i )
     {
         poDS->SetBand( i, new TileDBRasterBand( poDS, i ) );
-    }
-
-    poDS->eAccess = poOpenInfo->eAccess;
-
-    // taken from the geotiff driver
-    poDS->eDataType = GDT_Unknown;
-
-    if( poDS->nBitsPerSample <= 8 )
-    {
-        poDS->eDataType = GDT_Byte;
-    }
-    else if( poDS->nBitsPerSample <= 16 )
-    {
-        if( poDS->nSampleFormat == SAMPLEFORMAT_INT )
-            poDS->eDataType = GDT_Int16;
-        else
-            poDS->eDataType = GDT_UInt16;
-    }
-    else if( poDS->nBitsPerSample == 32 )
-    {
-        if( poDS->nSampleFormat == SAMPLEFORMAT_COMPLEXINT )
-            poDS->eDataType = GDT_CInt16;
-        else if( poDS->nSampleFormat == SAMPLEFORMAT_IEEEFP )
-            poDS->eDataType = GDT_Float32;
-        else if( poDS->nSampleFormat == SAMPLEFORMAT_INT )
-            poDS->eDataType = GDT_Int32;
-        else
-            poDS->eDataType = GDT_UInt32;
-    }
-    else if( poDS->nBitsPerSample == 64 )
-    {
-        if( poDS->nSampleFormat == SAMPLEFORMAT_IEEEFP )
-            poDS->eDataType = GDT_Float64;
-        else if( poDS->nSampleFormat == SAMPLEFORMAT_COMPLEXIEEEFP )
-            poDS->eDataType = GDT_CFloat32;
-        else if( poDS->nSampleFormat == SAMPLEFORMAT_COMPLEXINT )
-            poDS->eDataType = GDT_CInt32;
-    }
-    else if( poDS->nBitsPerSample == 128 )
-    {
-        if( poDS->nSampleFormat == SAMPLEFORMAT_COMPLEXIEEEFP )
-            poDS->eDataType = GDT_CFloat64;
     }
 
     poDS->oOvManager.Initialize( poDS, CPLFormFilename(osArrayPath, pszArrayName, nullptr ) );
@@ -502,77 +481,66 @@ CPLErr TileDBDataset::CreateAttribute(tiledb::ArraySchema& schema)
                 attr.set_filter_list(*m_filterList);
             schema.add_attribute( attr );
             nBitsPerSample = 8;
-            nSampleFormat = SAMPLEFORMAT_INT;
             break;
         }
         case GDT_UInt16:
         {
             schema.add_attribute( tiledb::Attribute::create<unsigned short>( *m_ctx, TILEDB_VALUES ) );
             nBitsPerSample = 16;
-            nSampleFormat = SAMPLEFORMAT_UINT;
             break;
         }
         case GDT_UInt32:
         {
             schema.add_attribute( tiledb::Attribute::create<unsigned int>( *m_ctx, TILEDB_VALUES ) );
             nBitsPerSample = 32;
-            nSampleFormat = SAMPLEFORMAT_UINT;
             break;
         }
         case GDT_Int16:
         {
             schema.add_attribute( tiledb::Attribute::create<short>( *m_ctx, TILEDB_VALUES ) );
             nBitsPerSample = 16;
-            nSampleFormat = SAMPLEFORMAT_INT;
             break;
         }
         case GDT_Int32:
         {
             schema.add_attribute( tiledb::Attribute::create<int>( *m_ctx, TILEDB_VALUES ) );
             nBitsPerSample = 32;
-            nSampleFormat = SAMPLEFORMAT_INT;
             break;
         }
         case GDT_Float32:
         {
             schema.add_attribute( tiledb::Attribute::create<float>( *m_ctx, TILEDB_VALUES ) );
             nBitsPerSample = 32;
-            nSampleFormat = SAMPLEFORMAT_IEEEFP;
             break;
         }
         case GDT_Float64:
         {
             schema.add_attribute( tiledb::Attribute::create<double>( *m_ctx, TILEDB_VALUES ) );
             nBitsPerSample = 64;
-            nSampleFormat = SAMPLEFORMAT_IEEEFP;
             break;
         }
         case GDT_CInt16:
         {
             schema.add_attribute( tiledb::Attribute::create<short[2]>( *m_ctx, TILEDB_VALUES ) );
             nBitsPerSample = 16;
-            nSampleFormat = SAMPLEFORMAT_COMPLEXINT;
             break;
         }
         case GDT_CInt32:
         {
             schema.add_attribute( tiledb::Attribute::create<int[2]>( *m_ctx, TILEDB_VALUES ) );
             nBitsPerSample = 32;
-            nSampleFormat = SAMPLEFORMAT_COMPLEXINT;
             break;
         }
         case GDT_CFloat32:
         {
             schema.add_attribute( tiledb::Attribute::create<float[2]>( *m_ctx, TILEDB_VALUES ) );
             nBitsPerSample = 32;
-            nSampleFormat = SAMPLEFORMAT_IEEEFP;
             break;
         }
         case GDT_CFloat64:
         {
             schema.add_attribute( tiledb::Attribute::create<double[2]>( *m_ctx, TILEDB_VALUES ) );
             nBitsPerSample = 64;
-            nSampleFormat = SAMPLEFORMAT_IEEEFP;
             break;
         }
         default:
@@ -666,7 +634,7 @@ TileDBDataset::Create( const char * pszFilename, int nXSize, int nYSize, int nBa
     poDS->SetMetadataItem( "NBITS", CPLString().Printf( "%i", poDS->nBitsPerSample ), "IMAGE_STRUCTURE" );
     poDS->SetMetadataItem( "X_SIZE", CPLString().Printf( "%i", poDS->nRasterXSize ), "IMAGE_STRUCTURE" );
     poDS->SetMetadataItem( "Y_SIZE", CPLString().Printf( "%i", poDS->nRasterYSize ), "IMAGE_STRUCTURE" );
-    poDS->SetMetadataItem( "SAMPLEFORMAT", CPLString().Printf( "%i", poDS->nSampleFormat ), "TIFF" );
+    poDS->SetMetadataItem( "DATA_TYPE", CPLString().Printf( "%i", poDS->eDataType ), "IMAGE_STRUCTURE" );
 
     return poDS;
 }
@@ -702,6 +670,7 @@ void GDALRegister_TileDB()
 "       <Value>RLE</Value>\n"
 "       <Value>BZIP2</Value>\n"
 "       <Value>DOUBLE-DELTA</Value>\n"
+"       <Value>POSITIVE-DELTA</Value>\n"
 "   </Option>\n"
 "   <Option name='COMPRESSION_LEVEL' type='int' description='Compression level'/>\n"
 "   <Option name='BLOCKXSIZE' type='int' description='Tile Width'/>"
@@ -719,6 +688,7 @@ void GDALRegister_TileDB()
     poDriver->pfnIdentify = TileDBDataset::Identify;
     poDriver->pfnOpen = TileDBDataset::Open;
     poDriver->pfnCreate = TileDBDataset::Create;
+    poDriver->pfnDelete = TileDBDataset::Delete;
 
     GetGDALDriverManager()->RegisterDriver( poDriver );
 }
