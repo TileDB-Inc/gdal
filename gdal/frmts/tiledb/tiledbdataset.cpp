@@ -67,12 +67,16 @@ class TileDBDataset : public GDALPamDataset
     public:
         virtual ~TileDBDataset();
 
+        CPLErr TryLoadXML(char **papszSiblingFiles = nullptr) override;
+        CPLErr TrySaveXML() override;
+
         static GDALDataset *Open( GDALOpenInfo * );
         static int          Identify( GDALOpenInfo * );
         static CPLErr       Delete( const char * pszFilename );	
         static GDALDataset *Create( const char * pszFilename,
                                 int nXSize, int nYSize, int nBands,
                                 GDALDataType eType, char ** papszParmList );
+        static void         ErrorHandler( const std::string& msg );
 };
 
 /************************************************************************/
@@ -86,7 +90,7 @@ class TileDBRasterBand : public GDALPamRasterBand
     friend class TileDBDataset;
     protected:
         TileDBDataset  *poGDS;
-        CPLErr SetBuffer( tiledb::Query& query, GDALDataType eType, void * pImage, int nSize );
+        CPLErr SetBuffer( tiledb::Query& query, void * pImage, int nSize );
     public:
         TileDBRasterBand( TileDBDataset *, int );
         virtual ~TileDBRasterBand();
@@ -126,7 +130,7 @@ TileDBRasterBand::~TileDBRasterBand()
 /*                             SetBuffer()                              */
 /************************************************************************/
 
-CPLErr TileDBRasterBand::SetBuffer( tiledb::Query& query, GDALDataType eType, void * pImage, int nSize )
+CPLErr TileDBRasterBand::SetBuffer( tiledb::Query& query, void * pImage, int nSize )
 {
  switch (eDataType)
     {
@@ -184,9 +188,9 @@ CPLErr TileDBRasterBand::IReadBlock( int nBlockXOff, int nBlockYOff,
     query.set_layout( TILEDB_ROW_MAJOR );   
     std::vector<size_t> subarray = { nStartX, nStartX + nBlockXSize - 1, 
                                      nStartY, nStartY + nBlockYSize - 1,
-                                     nBand, nBand };
+                                     size_t( nBand ), size_t( nBand ) };
 
-    SetBuffer(query, eDataType, pImage, nBlockXSize * nBlockYSize);
+    SetBuffer(query, pImage, nBlockXSize * nBlockYSize);
     query.set_subarray(subarray);
 
     if ( poGDS->bStats )
@@ -233,10 +237,10 @@ CPLErr TileDBRasterBand::IWriteBlock( int nBlockXOff, int nBlockYOff,
     query.set_layout( TILEDB_GLOBAL_ORDER );
     std::vector<size_t> subarray = { nStartX, nStartX + nBlockXSize - 1, 
                                      nStartY, nStartY + nBlockYSize - 1,
-                                     nBand, nBand };
+                                     size_t( nBand ), size_t( nBand ) };
     query.set_subarray(subarray);
 
-    SetBuffer(query, eDataType, pImage, nBlockXSize * nBlockYSize);
+    SetBuffer(query, pImage, nBlockXSize * nBlockYSize);
 
     if ( poGDS->bStats )
         tiledb::Stats::enable();
@@ -297,6 +301,278 @@ TileDBDataset::~TileDBDataset()
 }
 
 /************************************************************************/
+/*                           TrySaveXML()                               */
+/************************************************************************/
+
+CPLErr TileDBDataset::TrySaveXML()
+
+{
+    tiledb::VFS vfs( *m_ctx, m_ctx->config() );
+
+    nPamFlags &= ~GPF_DIRTY;
+
+    if( psPam == nullptr || (nPamFlags & GPF_NOSAVE) )
+        return CE_None;
+
+/* -------------------------------------------------------------------- */
+/*      Make sure we know the filename we want to store in.             */
+/* -------------------------------------------------------------------- */
+    if( !BuildPamFilename() )
+        return CE_None;
+
+/* -------------------------------------------------------------------- */
+/*      Build the XML representation of the auxiliary metadata.          */
+/* -------------------------------------------------------------------- */
+    CPLXMLNode *psTree = SerializeToXML( nullptr );
+ 
+    if( psTree == nullptr )
+    {
+        /* If we have unset all metadata, we have to delete the PAM file */
+        vfs.remove_file(psPam->pszPamFilename);
+        return CE_None;
+    }
+
+/* -------------------------------------------------------------------- */
+/*      If we are working with a subdataset, we need to integrate       */
+/*      the subdataset tree within the whole existing pam tree,         */
+/*      after removing any old version of the same subdataset.          */
+/* -------------------------------------------------------------------- */
+    if( !psPam->osSubdatasetName.empty() )
+    {
+        CPLXMLNode *psOldTree = nullptr, *psSubTree;
+
+        CPLErrorReset();
+        CPLPushErrorHandler( CPLQuietErrorHandler );
+
+        auto nBytes = vfs.file_size( psPam->pszPamFilename );
+        if ( nBytes > 0 )
+        {
+            tiledb::VFS::filebuf fbuf( vfs );
+            fbuf.open( psPam->pszPamFilename, std::ios::in );
+            std::istream is ( &fbuf );
+
+            if ( is.good() )
+            {
+                CPLString osDoc;
+                osDoc.resize(nBytes);
+                is.read( ( char* ) osDoc.data(), nBytes );
+                psOldTree = CPLParseXMLString( osDoc );
+            }
+            
+            fbuf.close();
+        }
+
+        CPLPopErrorHandler();
+
+        if( psOldTree == nullptr )
+            psOldTree = CPLCreateXMLNode( nullptr, CXT_Element, "PAMDataset" );
+
+        for( psSubTree = psOldTree->psChild;
+             psSubTree != nullptr;
+             psSubTree = psSubTree->psNext )
+        {
+            if( psSubTree->eType != CXT_Element
+                || !EQUAL(psSubTree->pszValue,"Subdataset") )
+                continue;
+
+            if( !EQUAL(CPLGetXMLValue( psSubTree, "name", "" ),
+                       psPam->osSubdatasetName) )
+                continue;
+
+            break;
+        }
+
+        if( psSubTree == nullptr )
+        {
+            psSubTree = CPLCreateXMLNode( psOldTree, CXT_Element,
+                                          "Subdataset" );
+            CPLCreateXMLNode(
+                CPLCreateXMLNode( psSubTree, CXT_Attribute, "name" ),
+                CXT_Text, psPam->osSubdatasetName );
+        }
+
+        CPLXMLNode *psOldPamDataset = CPLGetXMLNode( psSubTree, "PAMDataset");
+        if( psOldPamDataset != nullptr )
+        {
+            CPLRemoveXMLChild( psSubTree, psOldPamDataset );
+            CPLDestroyXMLNode( psOldPamDataset );
+        }
+
+        CPLAddXMLChild( psSubTree, psTree );
+        psTree = psOldTree;
+    }
+
+/* -------------------------------------------------------------------- */
+/*      Try saving the auxiliary metadata.                               */
+/* -------------------------------------------------------------------- */
+
+    CPLPushErrorHandler( CPLQuietErrorHandler );
+
+    int bSaved = 0;
+    vfs.touch( psPam->pszPamFilename );
+    tiledb::VFS::filebuf fbuf( vfs );
+    fbuf.open( psPam->pszPamFilename, std::ios::out );
+    std::ostream os(&fbuf);
+
+    if (os.good())
+    {
+        char* pszTree = CPLSerializeXMLTree( psTree );
+        os.write( pszTree, strlen(pszTree));
+        bSaved = 1;
+    }
+
+    fbuf.close();
+    
+    CPLPopErrorHandler();
+
+/* -------------------------------------------------------------------- */
+/*      If it fails, check if we have a proxy directory for auxiliary    */
+/*      metadata to be stored in, and try to save there.                */
+/* -------------------------------------------------------------------- */
+    CPLErr eErr = CE_None;
+
+    if( bSaved )
+        eErr = CE_None;
+    else
+    {
+        const char *pszBasename = GetDescription();
+
+        if( psPam->osPhysicalFilename.length() > 0 )
+            pszBasename = psPam->osPhysicalFilename;
+
+        const char *pszNewPam = nullptr;
+        if( PamGetProxy(pszBasename) == nullptr
+            && ((pszNewPam = PamAllocateProxy(pszBasename)) != nullptr))
+        {
+            CPLErrorReset();
+            CPLFree( psPam->pszPamFilename );
+            psPam->pszPamFilename = CPLStrdup(pszNewPam);
+            eErr = TrySaveXML();
+        }
+        /* No way we can save into a /vsicurl resource */
+        else if( !STARTS_WITH(psPam->pszPamFilename, "/vsicurl") )
+        {
+            CPLError( CE_Warning, CPLE_AppDefined,
+                      "Unable to save auxiliary information in %s.",
+                      psPam->pszPamFilename );
+            eErr = CE_Warning;
+        }
+    }
+
+/* -------------------------------------------------------------------- */
+/*      Cleanup                                                         */
+/* -------------------------------------------------------------------- */
+    CPLDestroyXMLNode( psTree );
+
+    return eErr;
+}
+
+/************************************************************************/
+/*                           TryLoadXML()                               */
+/************************************************************************/
+
+CPLErr TileDBDataset::TryLoadXML( CPL_UNUSED char **papszSiblingFiles )
+
+{
+    PamInitialize();
+
+    tiledb::VFS vfs( *m_ctx, m_ctx->config() );
+
+/* -------------------------------------------------------------------- */
+/*      Clear dirty flag.  Generally when we get to this point is       */
+/*      from a call at the end of the Open() method, and some calls     */
+/*      may have already marked the PAM info as dirty (for instance     */
+/*      setting metadata), but really everything to this point is       */
+/*      reproducible, and so the PAM info should not really be          */
+/*      thought of as dirty.                                            */
+/* -------------------------------------------------------------------- */
+    nPamFlags &= ~GPF_DIRTY;
+
+/* -------------------------------------------------------------------- */
+/*      Try reading the file.                                           */
+/* -------------------------------------------------------------------- */
+    if( !BuildPamFilename() )
+        return CE_None;
+
+/* -------------------------------------------------------------------- */
+/*      In case the PAM filename is a .aux.xml file next to the         */
+/*      physical file and we have a siblings list, then we can skip     */
+/*      stat'ing the filesystem.                                        */
+/* -------------------------------------------------------------------- */
+    CPLXMLNode *psTree = nullptr;
+
+    CPLErr eLastErr = CPLGetLastErrorType();
+    int nLastErrNo = CPLGetLastErrorNo();
+    CPLString osLastErrorMsg = CPLGetLastErrorMsg();
+
+    CPLErrorReset();
+    CPLPushErrorHandler( CPLQuietErrorHandler );
+
+    auto nBytes = vfs.file_size( psPam->pszPamFilename );
+    if ( nBytes > 0 )
+    {
+        tiledb::VFS::filebuf fbuf( vfs );
+        fbuf.open( psPam->pszPamFilename, std::ios::in );
+        std::istream is ( &fbuf );
+        CPLString osDoc;
+        osDoc.resize(nBytes);
+        is.read( ( char* ) osDoc.data(), nBytes );
+        fbuf.close();
+        psTree = CPLParseXMLString( osDoc );
+    }
+
+    CPLPopErrorHandler();
+    CPLErrorReset();
+
+    if( eLastErr != CE_None )
+        CPLErrorSetState( eLastErr, nLastErrNo, osLastErrorMsg.c_str() );
+
+/* -------------------------------------------------------------------- */
+/*      If we are looking for a subdataset, search for its subtree not. */
+/* -------------------------------------------------------------------- */
+    if( psTree && !psPam->osSubdatasetName.empty() )
+    {
+        CPLXMLNode *psSubTree = psTree->psChild;
+
+        for( ;
+             psSubTree != nullptr;
+             psSubTree = psSubTree->psNext )
+        {
+            if( psSubTree->eType != CXT_Element
+                || !EQUAL(psSubTree->pszValue,"Subdataset") )
+                continue;
+
+            if( !EQUAL(CPLGetXMLValue( psSubTree, "name", "" ),
+                       psPam->osSubdatasetName) )
+                continue;
+
+            psSubTree = CPLGetXMLNode( psSubTree, "PAMDataset" );
+            break;
+        }
+
+        if( psSubTree != nullptr )
+            psSubTree = CPLCloneXMLTree( psSubTree );
+
+        CPLDestroyXMLNode( psTree );
+        psTree = psSubTree;
+    }
+
+/* -------------------------------------------------------------------- */
+/*      Initialize ourselves from this XML tree.                        */
+/* -------------------------------------------------------------------- */
+
+    CPLString osVRTPath(CPLGetPath(psPam->pszPamFilename));
+    const CPLErr eErr = XMLInit( psTree, osVRTPath );
+
+    CPLDestroyXMLNode( psTree );
+
+    if( eErr != CE_None )
+        PamClear();
+
+    return eErr;
+}
+
+/************************************************************************/
 /*                           AddFilter()                                */
 /************************************************************************/
 
@@ -341,7 +617,8 @@ CPLErr TileDBDataset::Delete( const char * pszFilename )
 
 {
     tiledb::Context ctx;
-    tiledb::VFS vfs(ctx);
+    ctx.set_error_handler( ErrorHandler );
+    tiledb::VFS vfs( ctx );
     if ( vfs.is_dir( pszFilename ) )
     {
         vfs.remove_dir( pszFilename );
@@ -361,9 +638,10 @@ int TileDBDataset::Identify( GDALOpenInfo * poOpenInfo )
     const char* pszConfig = CSLFetchNameValue( poOpenInfo->papszOpenOptions, "TILEDB_CONFIG" );
     if ( pszConfig != nullptr )
     {
-        tiledb::Config cfg(pszConfig);
-        tiledb::Context ctx(cfg);
-        tiledb::VFS vfs(ctx, cfg);
+        tiledb::Config cfg( pszConfig );
+        tiledb::Context ctx( cfg );
+        ctx.set_error_handler( ErrorHandler );
+        tiledb::VFS vfs( ctx, cfg );
         if ( ( vfs.is_bucket(poOpenInfo->pszFilename ) ) && 
             ( tiledb::Object::object( ctx, poOpenInfo->pszFilename ).type() == tiledb::Object::Type::Array ) )
             return TRUE;
@@ -407,6 +685,8 @@ GDALDataset *TileDBDataset::Open( GDALOpenInfo * poOpenInfo )
     {
         poDS->m_ctx.reset( new tiledb::Context() );
     }
+
+    poDS->m_ctx->set_error_handler(ErrorHandler);
 
     CPLString osArrayPath;
     osArrayPath = poOpenInfo->pszFilename; 
@@ -470,11 +750,25 @@ GDALDataset *TileDBDataset::Open( GDALOpenInfo * poOpenInfo )
         poDS->SetBand( i, new TileDBRasterBand( poDS, i ) );
     }
 
-    poDS->oOvManager.Initialize( poDS, CPLFormFilename(osArrayPath, pszArrayName, nullptr ) );
+    tiledb::VFS vfs( *poDS->m_ctx, poDS->m_ctx->config() );
+    if ( vfs.is_dir( poOpenInfo->pszFilename ) )
+        poDS->oOvManager.Initialize( poDS, CPLFormFilename(osArrayPath, pszArrayName, nullptr ) );
+    else 
+        CPLError( CE_Warning, CPLE_AppDefined,
+            "Overviews not supported for network writes." );
     
     return poDS;
 }
 
+/************************************************************************/
+/*                              ErrorHandler()                          */
+/************************************************************************/
+
+void TileDBDataset::ErrorHandler( const std::string& msg )
+
+{
+    CPLError( CE_Failure, CPLE_AppDefined, "%s", msg.c_str() );
+}
 
 /************************************************************************/
 /*                              CreateAttribute()                       */
@@ -585,6 +879,8 @@ TileDBDataset::Create( const char * pszFilename, int nXSize, int nYSize, int nBa
         poDS->m_ctx.reset( new tiledb::Context() );
     }
 
+    poDS->m_ctx->set_error_handler(ErrorHandler);
+
     const char* pszCompression = CSLFetchNameValue( papszParmList, "COMPRESSION" );  
     const char* pszCompressionLevel = CSLFetchNameValue( papszParmList, "COMPRESSION_LEVEL" );
  
@@ -618,9 +914,9 @@ TileDBDataset::Create( const char * pszFilename, int nXSize, int nYSize, int nBa
     size_t w = DIV_ROUND_UP(nXSize, poDS->nBlockXSize) * poDS->nBlockXSize;
     size_t h = DIV_ROUND_UP(nYSize, poDS->nBlockYSize) * poDS->nBlockYSize;
     
-    auto d1 = tiledb::Dimension::create<size_t>( *poDS->m_ctx, "X", {0, w}, poDS->nBlockXSize );
-    auto d2 = tiledb::Dimension::create<size_t>( *poDS->m_ctx, "Y", {0, h}, poDS->nBlockYSize );
-    auto d3 = tiledb::Dimension::create<size_t>( *poDS->m_ctx, "BANDS", {1, nBands}, 1);
+    auto d1 = tiledb::Dimension::create<size_t>( *poDS->m_ctx, "X", {0, w}, size_t( poDS->nBlockXSize ) );
+    auto d2 = tiledb::Dimension::create<size_t>( *poDS->m_ctx, "Y", {0, h}, size_t( poDS->nBlockYSize ) );
+    auto d3 = tiledb::Dimension::create<size_t>( *poDS->m_ctx, "BANDS", {1, size_t( nBands )}, 1);
 
     domain.add_dimensions( d1, d2, d3 );
     schema.set_domain( domain );
