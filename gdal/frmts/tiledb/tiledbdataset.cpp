@@ -358,8 +358,17 @@ CPLErr TileDBDataset::Delete( const char * pszFilename )
 int TileDBDataset::Identify( GDALOpenInfo * poOpenInfo )
 
 {
-    // use GDAL VSI for Identify
-    if( poOpenInfo->bIsDirectory )
+    const char* pszConfig = CSLFetchNameValue( poOpenInfo->papszOpenOptions, "TILEDB_CONFIG" );
+    if ( pszConfig != nullptr )
+    {
+        tiledb::Config cfg(pszConfig);
+        tiledb::Context ctx(cfg);
+        tiledb::VFS vfs(ctx, cfg);
+        if ( ( vfs.is_bucket(poOpenInfo->pszFilename ) ) && 
+            ( tiledb::Object::object( ctx, poOpenInfo->pszFilename ).type() == tiledb::Object::Type::Array ) )
+            return TRUE;
+    }
+    else if( poOpenInfo->bIsDirectory )
     {
         const char* pszArrayName = CPLGetBasename( poOpenInfo->pszFilename ); 
         const int nMaxFiles =
@@ -388,7 +397,7 @@ GDALDataset *TileDBDataset::Open( GDALOpenInfo * poOpenInfo )
 
     TileDBDataset *poDS = new TileDBDataset();
 
-    const char* pszConfig = CSLFetchNameValue( poOpenInfo->papszOpenOptions, "CONFIG" );
+    const char* pszConfig = CSLFetchNameValue( poOpenInfo->papszOpenOptions, "TILEDB_CONFIG" );
     if( pszConfig != nullptr )
     {
         tiledb::Config cfg( pszConfig );
@@ -565,7 +574,7 @@ TileDBDataset::Create( const char * pszFilename, int nXSize, int nYSize, int nBa
     poDS->eAccess = GA_Update;
     poDS->eDataType = eType;
 
-    const char* pszConfig = CSLFetchNameValue( papszParmList, "CONFIG" );
+    const char* pszConfig = CSLFetchNameValue( papszParmList, "TILEDB_CONFIG" );
     if( pszConfig != nullptr )
     {
         tiledb::Config cfg( pszConfig );
@@ -625,7 +634,6 @@ TileDBDataset::Create( const char * pszFilename, int nXSize, int nYSize, int nBa
     CPLString osAux;
     osAux.Printf( "%s.tdb", pszArrayName );        
 
-    // aux file is in array folder, GDAL VSI will write this
     poDS->SetPhysicalFilename( CPLFormFilename( pszFilename, osAux.c_str(), nullptr ) );
 
     // Initialize any PAM information.
@@ -676,13 +684,13 @@ void GDALRegister_TileDB()
 "   <Option name='BLOCKXSIZE' type='int' description='Tile Width'/>"
 "   <Option name='BLOCKYSIZE' type='int' description='Tile Height'/>"
 "   <Option name='STATS' type='boolean' description='Dump TileDB stats'/>"
-"   <Option name='CONFIG' type='string' description='location of configuration file for TileDB'/>"
+"   <Option name='TILEDB_CONFIG' type='string' description='location of configuration file for TileDB'/>"
 "</CreationOptionList>\n" );
 
     poDriver->SetMetadataItem( GDAL_DMD_OPENOPTIONLIST,
 "<OpenOptionList>"
 "   <Option name='STATS' type='boolean' description='Dump TileDB stats'/>"
-"   <Option name='CONFIG' type='string' description='location of configuration file for TileDB'/>"
+"   <Option name='TILEDB_CONFIG' type='string' description='location of configuration file for TileDB'/>"
 "</OpenOptionList>" );
 
     poDriver->pfnIdentify = TileDBDataset::Identify;
