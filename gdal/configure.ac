@@ -5373,8 +5373,7 @@ TILEDB_SETTING=no
 
 if test "$with_tiledb" = "yes" -o "$with_tiledb" = "" ; then
 
-  AC_CHECK_LIB(tiledb,tiledb_coords,TILEDB_SETTING=yes,TILEDB_SETTING=no,)
-
+  TILEDB_SETTING=yes
   if test "$TILEDB_SETTING" = "yes" ; then
     LIBS="-ltiledb $LIBS"
   else
