@@ -40294,7 +40294,49 @@ TILEDB_SETTING=no
 
 if test "$with_tiledb" = "yes" -o "$with_tiledb" = "" ; then
 
+  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for tiledb_coords in -ltiledb" >&5
+$as_echo_n "checking for tiledb_coords in -ltiledb... " >&6; }
+if ${ac_cv_lib_tiledb_tiledb_coords+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  ac_check_lib_save_LIBS=$LIBS
+LIBS="-ltiledb  $LIBS"
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.  */
+#ifdef __cplusplus
+extern "C"
+#endif
+char tiledb_coords ();
+int
+main ()
+{
+return tiledb_coords ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  ac_cv_lib_tiledb_tiledb_coords=yes
+else
+  ac_cv_lib_tiledb_tiledb_coords=no
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+LIBS=$ac_check_lib_save_LIBS
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_tiledb_tiledb_coords" >&5
+$as_echo "$ac_cv_lib_tiledb_tiledb_coords" >&6; }
+if test "x$ac_cv_lib_tiledb_tiledb_coords" = xyes; then :
   TILEDB_SETTING=yes
+else
+  TILEDB_SETTING=no
+fi
+
+
   if test "$TILEDB_SETTING" = "yes" ; then
     LIBS="-ltiledb $LIBS"
   else
