@@ -1379,7 +1379,7 @@ CPLErr TileDBDataset::CopySubDatasets( GDALDataset* poSrcDS,
         CPLFree( pszSource );
     }
 
-    poDstDS->SetMetadata(poDstDS->papszSubDatasets, "SUBDATASETS");
+    poDstDS->SetMetadata( poDstDS->papszSubDatasets, "SUBDATASETS" );
 
     tiledb::Array::create( poDstDS->GetDescription(), *poDstDS->m_schema );
     poDstDS->m_array.reset( new tiledb::Array(

@@ -27,10 +27,10 @@
 ###############################################################################
 
 import pytest
+
 import gdaltest
 
 @pytest.mark.require_driver('TileDB')
 def test_tiledb_open():
     ut = gdaltest.GDALTest('TileDB', 'tiledb_array', 1, 4857)
     ut.testOpen()
-

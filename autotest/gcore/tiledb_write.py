@@ -47,7 +47,8 @@ def test_tiledb_write_complex():
 
     gdaltest.tiledb_drv.Delete('tmp/tiledb_complex64')
 
-def test_tiff_write_custom_blocksize():
+@pytest.mark.require_driver('TileDB')
+def test_tiledb_write_custom_blocksize():
     gdaltest.tiledb_drv = gdal.GetDriverByName('TileDB')
 
     src_ds = gdal.Open('data/utmsmall.tif')
@@ -66,7 +67,8 @@ def test_tiff_write_custom_blocksize():
 
     gdaltest.tiledb_drv.Delete('tmp/tiledb_custom')
 
-def test_tiff_write_rgb():
+@pytest.mark.require_driver('TileDB')
+def test_tiledb_write_rgb():
     gdaltest.tiledb_drv = gdal.GetDriverByName('TileDB')
 
     src_ds = gdal.Open('data/rgbsmall.tif')
@@ -80,3 +82,27 @@ def test_tiff_write_rgb():
     new_ds = None
 
     gdaltest.tiledb_drv.Delete('tmp/tiledb_rgb')    
+
+@pytest.mark.require_driver('TileDB')
+@pytest.mark.require_driver('HDF5')
+def test_tiledb_write_subdatasets():
+    gdaltest.tiledb_drv = gdal.GetDriverByName('TileDB')
+
+    src_ds = gdal.Open('data/DeepBlue-SeaWiFS-1.0_L3_20100101_v004-20130604T131317Z.h5')
+
+    new_ds = gdaltest.tiledb_drv.CreateCopy('tmp/test_sds_array', src_ds,
+                                        False)
+
+    assert new_ds is not None
+    new_ds = None
+    src_ds = None
+
+    src_ds = gdal.Open('tmp/test_sds_array')
+    assert 'tmp/test_sds_array/test_sds_array.tdb.aux.xml' in src_ds.GetFileList()
+    src_ds = None
+
+    src_ds = gdal.Open('TILEDB:"tmp/test_sds_array":viewing_zenith_angle')
+    assert src_ds.GetRasterBand(1).Checksum() == 42472
+    src_ds = None
+
+    gdaltest.tiledb_drv.Delete('tmp/test_sds_array')
