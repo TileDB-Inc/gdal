@@ -59,6 +59,7 @@ class TileDBDataset : public GDALPamDataset
         int           nBlocksX = 0;
         int           nBlocksY = 0;
         bool          bHasSubDatasets = false;
+        bool          bConsolidate = false;
         int           nSubDataCount = 0;
         char          **papszSubDatasets = nullptr;
         CPLStringList m_osSubdatasetMD{};
@@ -122,7 +123,6 @@ class TileDBRasterBand : public GDALPamRasterBand
         bool bStats;
         CPLString osAttrName;
         std::unique_ptr<tiledb::Query> m_query;
-        void   Finalize( );
     public:
         TileDBRasterBand( TileDBDataset *, int, CPLString = TILEDB_VALUES );
         virtual CPLErr IReadBlock( int, int, void * ) override;
@@ -210,45 +210,7 @@ TileDBRasterBand::TileDBRasterBand(
     osAttrName = osAttr;
 
     m_query.reset(new tiledb::Query( *poGDS->m_ctx, *poGDS->m_array ) );
-    
-    if ( eAccess == GA_Update)
-        m_query->set_layout( TILEDB_GLOBAL_ORDER );
-    else
-        m_query->set_layout( TILEDB_ROW_MAJOR );
-
-     // initialize to complete image block layout
-    std::vector<uint64_t> oaSubarray = { uint64_t( nBand ),
-                                    uint64_t( nBand ),
-                                    0,
-                                    uint64_t( poDSIn->nBlocksY * nBlockYSize ) - 1,
-                                    0,
-                                    uint64_t( poDSIn->nBlocksX * nBlockXSize ) - 1, 
-                                    };
-
-    if ( poGDS->m_array->schema().domain().ndim() == 3 )
-    {
-        m_query->set_subarray( oaSubarray );
-    }
-    else
-    {
-
-        m_query->set_subarray( std::vector<uint64_t> (
-                                    oaSubarray.cbegin() + 2,
-                                    oaSubarray.cend() ) );
-    }
-}
-
-/************************************************************************/
-/*                          Finalize()                                  */
-/************************************************************************/
-
-void TileDBRasterBand::Finalize()
-
-{
-    if ( eAccess == GA_Update )
-    {
-        m_query->finalize();
-    }
+    m_query->set_layout( TILEDB_ROW_MAJOR );
 }
 
 /************************************************************************/
@@ -321,6 +283,22 @@ CPLErr TileDBRasterBand::IWriteBlock( int nBlockXOff,
                && nBlockXOff >= 0
                && nBlockYOff >= 0
                && pImage != nullptr );
+
+    poGDS->bConsolidate = true;
+    int nStartX = nBlockXSize * nBlockXOff;
+    int nStartY = nBlockYSize * nBlockYOff;
+    uint64_t nEndX =  nStartX + nBlockXSize;
+    uint64_t nEndY =  nStartY + nBlockYSize;
+
+    std::vector<uint64_t> oaSubarray = {
+                                    uint64_t( nBand ),
+                                    uint64_t( nBand ),
+                                    (uint64_t) nStartY,
+                                    (uint64_t) nEndY - 1,
+                                    (uint64_t) nStartX,
+                                    (uint64_t) nEndX - 1 };
+
+    m_query->set_subarray( oaSubarray );
 
     std::vector<std::unique_ptr<void, decltype(&VSIFree)>> aBlocks;
 
@@ -432,19 +410,16 @@ TileDBDataset::~TileDBDataset()
 
 {
     FlushCache();
-    // important to finalize arrays before closing array when updating
-    if ( eAccess == GA_Update )
-    {
-        for( auto&& poBand: GetBands() )
-        {
-            static_cast<TileDBRasterBand*>( poBand )->Finalize();
-        }
-    }
 
     try
     {
         if( m_array )
             m_array->close();
+        
+        if ( bConsolidate )
+        {
+            tiledb::Array::consolidate( *m_ctx, GetDescription() );
+        }
     }
     catch(const tiledb::TileDBError& e)
     {
@@ -927,6 +902,10 @@ GDALDataset *TileDBDataset::Open( GDALOpenInfo * poOpenInfo )
         if( !Identify( poOpenInfo ) )
             return nullptr;
 
+        tiledb_query_type_t eMode = TILEDB_READ;
+        if ( poOpenInfo->eAccess == GA_Update )
+            eMode = TILEDB_WRITE;
+
         std::unique_ptr<TileDBDataset> poDS(new TileDBDataset());
 
         const char* pszConfig = CSLFetchNameValue(
@@ -988,7 +967,7 @@ GDALDataset *TileDBDataset::Open( GDALOpenInfo * poOpenInfo )
         poDS->TryLoadXML();
 
         poDS->m_array.reset(
-            new tiledb::Array( *poDS->m_ctx, osArrayPath, TILEDB_READ ) );
+            new tiledb::Array( *poDS->m_ctx, osArrayPath, eMode ) );
 
         tiledb::ArraySchema schema = poDS->m_array->schema();
 
