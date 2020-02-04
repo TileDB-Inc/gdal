@@ -26,91 +26,9 @@
  * DEALINGS IN THE SOFTWARE.
  ****************************************************************************/
 
-#include <list>
-
-#include "cpl_string.h"
-#include "gdal_frmts.h"
-#include "gdal_pam.h"
-
 #include "tiledb_headers.h"
 
 CPL_CVSID("$Id$")
-
-
-const CPLString TILEDB_VALUES( "TDB_VALUES" );
-
-/************************************************************************/
-/* ==================================================================== */
-/*                               TileDBDataset                          */
-/* ==================================================================== */
-/************************************************************************/
-
-class TileDBRasterBand;
-
-class TileDBDataset final: public GDALPamDataset
-{
-    friend class TileDBRasterBand;
-
-    protected:
-        int           nBitsPerSample = 8;
-        GDALDataType  eDataType = GDT_Unknown;
-        int           nBlockXSize = -1;
-        int           nBlockYSize = -1;
-        int           nBlocksX = 0;
-        int           nBlocksY = 0;
-        int           nBandStart = 1;
-        bool          bGlobalOrder = false;
-        bool          bHasSubDatasets = false;
-        int           nSubDataCount = 0;
-        char          **papszSubDatasets = nullptr;
-        CPLStringList m_osSubdatasetMD{};
-        CPLXMLNode*   psSubDatasetsTree = nullptr;
-        CPLString     osMetaDoc;
-
-        std::unique_ptr<tiledb::Context> m_ctx;
-        std::unique_ptr<tiledb::Context> m_roCtx;
-        std::unique_ptr<tiledb::Array> m_array;
-        std::unique_ptr<tiledb::Array> m_roArray;
-        std::unique_ptr<tiledb::ArraySchema> m_schema;
-        std::unique_ptr<tiledb::FilterList> m_filterList;
-
-        char          **papszAttributes = nullptr;
-        std::list<std::unique_ptr<GDALDataset>> lpoAttributeDS = {};
-
-        bool bStats = FALSE;
-        CPLErr AddFilter( const char* pszFilterName, const int level );
-        CPLErr CreateAttribute( GDALDataType eType, const CPLString& osAttrName,
-                                const int nSubRasterCount=1 );
-    public:
-        virtual ~TileDBDataset();
-
-        CPLErr TryLoadCachedXML(char **papszSiblingFiles = nullptr, bool bReload=true);
-        CPLErr TryLoadXML(char **papszSiblingFiles = nullptr) override;
-        CPLErr TrySaveXML() override;
-        char** GetMetadata(const char *pszDomain) override;
-        static GDALDataset      *Open( GDALOpenInfo * );
-        static int              Identify( GDALOpenInfo * );
-        static CPLErr           Delete( const char * pszFilename );
-        static CPLErr           CopySubDatasets( GDALDataset* poSrcDS,
-                                                TileDBDataset* poDstDS,
-                                                GDALProgressFunc pfnProgress, 
-                                                void *pProgressData );
-        static TileDBDataset    *CreateLL( const char * pszFilename,
-                                    int nXSize, int nYSize, int nBands,
-                                    char ** papszOptions );
-        static GDALDataset      *Create( const char * pszFilename,
-                                    int nXSize, int nYSize, int nBands,
-                                    GDALDataType eType, char ** papszOptions );
-        static GDALDataset      *CreateCopy( const char * pszFilename,
-                                    GDALDataset *poSrcDS,
-                                    int bStrict, char ** papszOptions,
-                                    GDALProgressFunc pfnProgress,
-                                    void *pProgressData);
-        static void             ErrorHandler( const std::string& msg );
-        static void             SetBlockSize( GDALRasterBand* poBand,
-                                                char ** &papszOptions );
-
-};
 
 /************************************************************************/
 /* ==================================================================== */
@@ -494,6 +412,7 @@ TileDBDataset::~TileDBDataset()
     CPLDestroyXMLNode( psSubDatasetsTree );
     CSLDestroy( papszSubDatasets );
     CSLDestroy( papszAttributes );
+    CSLDestroy( papszCreationOptions );
 }
 
 /************************************************************************/
@@ -1930,6 +1849,19 @@ TileDBDataset::CreateCopy( const char * pszFilename, GDALDataset *poSrcDS,
                 void *pProgressData )
 
 {
+    CPLDebug("GDAL_TileDB", "\n=====\nTileDBDataset::CreateCopy(%s, ...)",
+            pszFilename);
+
+    if( poSrcDS->GetRootGroup() )
+    {
+        auto poDrv = GDALDriver::FromHandle(GDALGetDriverByName("TileDB"));
+        if( poDrv )
+        {
+            return poDrv->DefaultCreateCopy(pszFilename, poSrcDS, bStrict,
+                                     papszOptions, pfnProgress, pProgressData);
+        }
+    }
+
     char** papszCopyOptions = CSLDuplicate( papszOptions );
     try
     {
@@ -2124,11 +2056,43 @@ void GDALRegister_TileDB()
 "   <Option name='TILEDB_CONFIG' type='string' description='location of configuration file for TileDB'/>"
 "</OpenOptionList>" );
 
+    poDriver->SetMetadataItem( GDAL_DCAP_MULTIDIM_RASTER, "YES" );
+
+    poDriver->SetMetadataItem(GDAL_DMD_MULTIDIM_DATASET_CREATIONOPTIONLIST,
+"<MultiDimDatasetCreationOptionList>"
+"<CreationOptionList>\n"
+"   <Option name='STATS' type='boolean' description='Dump TileDB stats'/>"
+"   <Option name='TILEDB_CONFIG' type='string' description='location of configuration file for TileDB'/>"
+"</MultiDimDatasetCreationOptionList>" );
+
+    poDriver->SetMetadataItem(GDAL_DMD_MULTIDIM_DIMENSION_CREATIONOPTIONLIST,
+"<MultiDimDimensionCreationOptionList>"
+"   <Option name='UNLIMITED' type='boolean' description='Whether the dimension should be unlimited' default='false'/>"
+"</MultiDimDimensionCreationOptionList>" );
+
+    poDriver->SetMetadataItem(GDAL_DMD_MULTIDIM_ARRAY_CREATIONOPTIONLIST,
+"<MultiDimArrayCreationOptionList>"
+"   <Option name='COMPRESSION' type='string-select' description='image compression to use' default='NONE'>\n"
+"       <Value>NONE</Value>\n"
+"       <Value>GZIP</Value>\n"
+"       <Value>ZSTD</Value>\n"
+"       <Value>LZ4</Value>\n"
+"       <Value>RLE</Value>\n"
+"       <Value>BZIP2</Value>\n"
+"       <Value>DOUBLE-DELTA</Value>\n"
+"       <Value>POSITIVE-DELTA</Value>\n"
+"   </Option>\n"
+"   <Option name='COMPRESSION_LEVEL' type='int' description='Compression level'/>\n"
+"   <Option name='BLOCKXSIZE' type='int' description='Tile Width'/>"
+"   <Option name='BLOCKYSIZE' type='int' description='Tile Height'/>"
+"</MultiDimArrayCreationOptionList>" );
+
     poDriver->pfnIdentify = TileDBDataset::Identify;
     poDriver->pfnOpen = TileDBDataset::Open;
     poDriver->pfnCreate = TileDBDataset::Create;
     poDriver->pfnCreateCopy = TileDBDataset::CreateCopy;
     poDriver->pfnDelete = TileDBDataset::Delete;
+    poDriver->pfnCreateMultiDimensional = TileDBDataset::CreateMultiDimensional;
 
     GetGDALDriverManager()->RegisterDriver( poDriver );
 }
