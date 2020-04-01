@@ -1,7 +1,7 @@
 
 include ../../GDALmake.opt
 
-OBJ	=	tiledbdataset.o
+OBJ	=	tiledbdataset.o tiledbmultidim.o
 
 
 
