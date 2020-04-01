@@ -137,6 +137,52 @@ class TileDBRasterBand final: public GDALPamRasterBand
 };
 
 /************************************************************************/
+/*                            LoadConfig()                              */
+/************************************************************************/
+
+static tiledb::Config* LoadConfig(const char* pszCfg = nullptr )
+{
+    CPLString osHost = "https://api.tiledb.com";
+
+    std::unique_ptr<tiledb::Config> poCfg;
+
+    if ( pszCfg )
+    {
+        poCfg.reset( new tiledb::Config( pszCfg ) );
+    }
+    else
+    {
+        poCfg.reset( new tiledb::Config() );
+    }
+
+    const char* pszToken = getenv( "TILEDB_REST_TOKEN" );
+    const char* pszHost = getenv( "TILEDB_REST_HOST" );
+    const char* pszUsername = getenv( "TILEDB_REST_USERNAME" );
+    const char* pszPassword = getenv( "TILEDB_REST_PASSWORD" );
+    bool bVerifySSL = true;
+
+    if ( getenv( "TILEDB_VERIFIY_SSL" ) )
+        bVerifySSL = CPLTestBool( getenv( "TILEDB_VERIFY_SSL" ) );
+
+    if ( pszToken )
+        poCfg->set( "rest.token", pszToken );
+
+    if ( pszHost )
+        poCfg->set( "rest.host", pszHost );
+
+    if ( pszUsername )
+        poCfg->set( "rest.username", pszUsername );
+
+    if ( pszPassword )
+        poCfg->set( "rest.password", pszPassword );
+
+    if ( !bVerifySSL )
+        poCfg->set( "vfs.s3.verify_ssl", "false");
+
+    return poCfg.release();
+}
+
+/************************************************************************/
 /*                             SetBuffer()                              */
 /************************************************************************/
 
@@ -974,18 +1020,10 @@ int TileDBDataset::Identify( GDALOpenInfo * poOpenInfo )
         const char* pszConfig = CSLFetchNameValue( 
             poOpenInfo->papszOpenOptions, "TILEDB_CONFIG" );
 
-        if ( pszConfig != nullptr )
-        {
-            return TRUE;
-        }
-
-        if( poOpenInfo->bIsDirectory )
-        {
-            tiledb::Context ctx;
-            return tiledb::Object::object( ctx, poOpenInfo->pszFilename ).type() == tiledb::Object::Type::Array;
-        }
-
-        return FALSE;
+        std::unique_ptr<tiledb::Config> poCfg;
+        poCfg.reset( LoadConfig( pszConfig ) );
+        tiledb::Context ctx( *poCfg );
+        return tiledb::Object::object( ctx, poOpenInfo->pszFilename ).type() == tiledb::Object::Type::Array;
     }
     catch( ... )
     {
@@ -1010,15 +1048,10 @@ GDALDataset *TileDBDataset::Open( GDALOpenInfo * poOpenInfo )
         const char* pszConfig = CSLFetchNameValue(
                                     poOpenInfo->papszOpenOptions,
                                     "TILEDB_CONFIG" );
-        if( pszConfig != nullptr )
-        {
-            tiledb::Config cfg( pszConfig );
-            poDS->m_ctx.reset( new tiledb::Context( cfg ) );
-        }
-        else
-        {
-            poDS->m_ctx.reset( new tiledb::Context() );
-        }
+
+        std::unique_ptr<tiledb::Config> poCfg;
+        poCfg.reset( LoadConfig( pszConfig ) );
+        poDS->m_ctx.reset( new tiledb::Context( *poCfg ) );
 
         CPLString osArrayPath;
         CPLString osAux;
