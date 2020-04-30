@@ -168,7 +168,7 @@ static tiledb::Config* LoadConfig(const char* pszCfg = nullptr )
         poCfg->set( "rest.token", pszToken );
 
     if ( pszHost )
-        poCfg->set( "rest.host", pszHost );
+        poCfg->set( "rest.server_address", pszHost );
 
     if ( pszUsername )
         poCfg->set( "rest.username", pszUsername );
