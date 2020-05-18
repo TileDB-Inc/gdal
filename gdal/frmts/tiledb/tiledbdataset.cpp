@@ -797,7 +797,7 @@ CPLErr TileDBDataset::TryLoadCachedXML( char ** /*papszSiblingFiles*/, bool bRel
                     m_roArray->get_metadata("_gdal", &v_type, &v_num, &v_r);
                     if ( v_r )
                     {
-                        osMetaDoc = static_cast<const char*>( v_r );
+			osMetaDoc = CPLString( static_cast<const char*>( v_r ), v_num);
                     }
                 }
                 else
@@ -805,7 +805,7 @@ CPLErr TileDBDataset::TryLoadCachedXML( char ** /*papszSiblingFiles*/, bool bRel
                     m_array->get_metadata("_gdal", &v_type, &v_num, &v_r);
                     if ( v_r )
                     {
-                        osMetaDoc = static_cast<const char*>( v_r );
+			osMetaDoc = CPLString( static_cast<const char*>( v_r ), v_num);
                     }
                 }
                 psTree = CPLParseXMLString( osMetaDoc );
