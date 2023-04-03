@@ -197,14 +197,9 @@ OGRTileDBLayer::~OGRTileDBLayer()
         if (this->poFeatureDefn)
             this->poFeatureDefn->Release();
 
-        const double nPadX =
-            (this->sMaxEnvelope.MaxX - this->sMaxEnvelope.MinX) / 2.0;
-        const double nPadY =
-            (this->sMaxEnvelope.MaxY - this->sMaxEnvelope.MinY) / 2.0;
-
         // write the pad metadata
-        this->m_array->put_metadata("PAD_X", TILEDB_FLOAT64, 1, &nPadX);
-        this->m_array->put_metadata("PAD_Y", TILEDB_FLOAT64, 1, &nPadY);
+        this->m_array->put_metadata("PAD_X", TILEDB_FLOAT64, 1, &this->nPadX);
+        this->m_array->put_metadata("PAD_Y", TILEDB_FLOAT64, 1, &this->nPadY);
 
         if (m_array)
         {
@@ -364,20 +359,11 @@ OGRErr OGRTileDBLayer::ICreateFeature(OGRFeature *poFeature)
     this->aYs.push_back(sEnvelope.MinY +
                         ((sEnvelope.MaxY - sEnvelope.MinY) / 2.0));
 
-    if (this->sMaxEnvelope.IsInit())
-    {
-        this->sMaxEnvelope = sEnvelope;
-    }
-    else
-    {
-        if ((sEnvelope.MaxX - sEnvelope.MinX) >
-                (this->sMaxEnvelope.MaxX - this->sMaxEnvelope.MinX) &&
-            (sEnvelope.MaxY - sEnvelope.MinY) >
-                (this->sMaxEnvelope.MaxY - this->sMaxEnvelope.MinY))
-        {
-            this->sMaxEnvelope = sEnvelope;
-        }
-    }
+    if ((sEnvelope.MaxX - sEnvelope.MinX) > this->nPadX)
+        this->nPadX = sEnvelope.MaxX - sEnvelope.MinX;
+
+    if ((sEnvelope.MaxY - sEnvelope.MinY) > this->nPadY)
+        this->nPadY = sEnvelope.MaxY - sEnvelope.MinY;
 
     if (this->aNames.size() >= this->nBufferCount)
     {

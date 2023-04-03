@@ -198,7 +198,8 @@ class OGRTileDBLayer final : public OGRLayer
     std::vector<std::vector<unsigned char>> aGeometries;
     std::vector<uint64_t> aGeometryOffsets;
     uint64_t nBufferCount;
-    OGREnvelope sMaxEnvelope;
+    double nPadX;
+    double nPadY;
 
   public:
     OGRTileDBLayer(const char *pszFilename, const OGRwkbGeometryType eGType);
