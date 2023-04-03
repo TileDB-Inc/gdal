@@ -129,6 +129,9 @@ OGRTileDBDataset::ICreateLayer(CPL_UNUSED const char *pszName,
         return nullptr;
     }
 
+    poLayer->nBufferCount =
+        atoi(CSLFetchNameValueDef(papszOptions, "BATCH_SIZE", "10000"));
+
     m_apoLayers.emplace_back(std::move(poLayer));
 
     return m_apoLayers.back().get();
@@ -404,6 +407,8 @@ void OGRTileDBLayer::FlushArrays()
     query.set_buffer("geometry", this->aGeometryOffsets, this->aGeometries);
     query.submit();
 
+    this->aXs.clear();
+    this->aYs.clear();
     this->aGeometries.clear();
     this->aNames.clear();
     this->aGeometryOffsets.resize(1);
