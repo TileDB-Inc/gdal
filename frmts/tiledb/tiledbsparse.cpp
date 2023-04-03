@@ -100,7 +100,8 @@ OGRTileDBDataset::ICreateLayer(CPL_UNUSED const char *pszName,
     const char *pszBounds = CSLFetchNameValue(papszOptions, "bounds");
 
     // TODO add compression filters for attributes as per dense arrays, as well as timestamps for opening the dataset
-    auto poLayer = new OGRTileDBLayer(this->GetDescription(), eGType);
+    auto poLayer =
+        cpl::make_unique<OGRTileDBLayer>(this->GetDescription(), eGType);
     poLayer->m_ctx.reset(new tiledb::Context(*m_ctx));
 
     if (pszBounds)
@@ -108,10 +109,10 @@ OGRTileDBDataset::ICreateLayer(CPL_UNUSED const char *pszName,
         CPLStringList aosBounds(CSLTokenizeString2(pszBounds, ",", 0));
         if (aosBounds.Count() == 4)
         {
-            poLayer->nXStart = CPLAtoGIntBig(aosBounds[0]);
-            poLayer->nYStart = CPLAtoGIntBig(aosBounds[1]);
-            poLayer->nXEnd = CPLAtoGIntBig(aosBounds[2]);
-            poLayer->nYEnd = CPLAtoGIntBig(aosBounds[3]);
+            poLayer->nXStart = CPLAtof(aosBounds[0]);
+            poLayer->nYStart = CPLAtof(aosBounds[1]);
+            poLayer->nXEnd = CPLAtof(aosBounds[2]);
+            poLayer->nYEnd = CPLAtof(aosBounds[3]);
         }
         else
         {
@@ -128,7 +129,9 @@ OGRTileDBDataset::ICreateLayer(CPL_UNUSED const char *pszName,
         return nullptr;
     }
 
-    return poLayer;
+    m_apoLayers.emplace_back(std::move(poLayer));
+
+    return m_apoLayers.back().get();
 }
 
 /************************************************************************/
@@ -185,8 +188,8 @@ OGRTileDBLayer::~OGRTileDBLayer()
 {
     try
     {
-        if (this->poFeatureDefn)
-            this->poFeatureDefn->Release();
+        if (aNameOffsets.size() > 1)
+            FlushArrays();
 
         const double nPadX =
             (this->sMaxEnvelope.MaxX - this->sMaxEnvelope.MinX) / 2.0;
@@ -206,6 +209,9 @@ OGRTileDBLayer::~OGRTileDBLayer()
     {
         CPLError(CE_Failure, CPLE_AppDefined, "%s", e.what());
     }
+
+    if (this->poFeatureDefn)
+        this->poFeatureDefn->Release();
 }
 
 /************************************************************************/
@@ -267,10 +273,10 @@ OGRErr OGRTileDBLayer::ICreateFeature(OGRFeature *poFeature)
         tiledb::Domain domain(*m_ctx);
 
         // hard code block size but this is a creation option in dense arrays
-        auto d1 = tiledb::Dimension::create<uint64_t>(
-            *m_ctx, "_X", {nXStart, nXEnd}, uint64_t(10000));
-        auto d2 = tiledb::Dimension::create<uint64_t>(
-            *m_ctx, "_Y", {nYStart, nYEnd}, uint64_t(10000));
+        auto d1 = tiledb::Dimension::create<double>(
+            *m_ctx, "_X", {nXStart, nXEnd}, double(10000));
+        auto d2 = tiledb::Dimension::create<double>(
+            *m_ctx, "_Y", {nYStart, nYEnd}, double(10000));
 
         domain.add_dimensions(d1, d2);
 
@@ -311,7 +317,7 @@ OGRErr OGRTileDBLayer::ICreateFeature(OGRFeature *poFeature)
                 {
                     CPLError(CE_Failure, CPLE_NoWriteAccess,
                              "Unsupported attribute definition.\n");
-                    return OGRERR_FAILURE;
+                    //return OGRERR_FAILURE;
                 }
             }
         }
@@ -336,7 +342,7 @@ OGRErr OGRTileDBLayer::ICreateFeature(OGRFeature *poFeature)
     // buffer features
     const char *pszName =
         poFeature->GetFieldAsString(poFeature->GetFieldIndex("name"));
-    this->aNames.push_back(pszName);
+    this->aNames.insert(this->aNames.end(), pszName, pszName + strlen(pszName));
     this->aNameOffsets.push_back(
         this->aNameOffsets[this->aNameOffsets.size() - 1] + strlen(pszName));
 
@@ -344,7 +350,8 @@ OGRErr OGRTileDBLayer::ICreateFeature(OGRFeature *poFeature)
     const size_t nSize = poGeom->WkbSize();
     std::vector<unsigned char> aGeometry(nSize);
     poGeom->exportToWkb(wkbNDR, aGeometry.data());
-    this->aGeometries.push_back(aGeometry);
+    this->aGeometries.insert(this->aGeometries.end(), aGeometry.begin(),
+                             aGeometry.end());
     this->aGeometryOffsets.push_back(
         this->aGeometryOffsets[this->aGeometryOffsets.size() - 1] + nSize);
 
@@ -372,27 +379,37 @@ OGRErr OGRTileDBLayer::ICreateFeature(OGRFeature *poFeature)
         }
     }
 
-    if (this->aNames.size() >= this->nBufferCount)
+    if (this->aNameOffsets.size() == this->nBufferCount + 1)
     {
-        this->aGeometryOffsets.pop_back();
-        this->aNameOffsets.pop_back();
-
-        tiledb::Query query(*this->m_ctx, *this->m_array);
-        query.set_buffer("_X", this->aXs);
-        query.set_buffer("_Y", this->aYs);
-        query.set_buffer("name", this->aNameOffsets, this->aNames);
-        query.set_buffer("geometry", this->aGeometryOffsets, this->aGeometries);
-        query.submit();
-
-        this->aGeometries.clear();
-        this->aNames.clear();
-        this->aGeometryOffsets.resize(1);
-        this->aGeometryOffsets[0] = 0;
-        this->aNameOffsets.resize(1);
-        this->aNameOffsets[0] = 0;
+        FlushArrays();
     }
 
     return OGRERR_NONE;
+}
+
+/************************************************************************/
+/*                          FlushArrays()                               */
+/************************************************************************/
+
+void OGRTileDBLayer::FlushArrays()
+{
+    this->aGeometryOffsets.pop_back();
+    this->aNameOffsets.pop_back();
+    CPLDebug("TILEDB", "Flush %d records", int(this->aNameOffsets.size()));
+
+    tiledb::Query query(*this->m_ctx, *this->m_array);
+    query.set_buffer("_X", this->aXs);
+    query.set_buffer("_Y", this->aYs);
+    query.set_buffer("name", this->aNameOffsets, this->aNames);
+    query.set_buffer("geometry", this->aGeometryOffsets, this->aGeometries);
+    query.submit();
+
+    this->aGeometries.clear();
+    this->aNames.clear();
+    this->aGeometryOffsets.resize(1);
+    this->aGeometryOffsets[0] = 0;
+    this->aNameOffsets.resize(1);
+    this->aNameOffsets[0] = 0;
 }
 
 /************************************************************************/

@@ -187,18 +187,20 @@ class OGRTileDBLayer final : public OGRLayer
     OGRFeatureDefn *poFeatureDefn;
     const CPLString osConfig;
     int nNextFID;
-    uint64_t nXStart;
-    uint64_t nYStart;
-    uint64_t nXEnd;
-    uint64_t nYEnd;
+    double nXStart;
+    double nYStart;
+    double nXEnd;
+    double nYEnd;
     std::vector<double> aXs;
     std::vector<double> aYs;
-    std::vector<std::string> aNames;
+    std::vector<char> aNames;
     std::vector<uint64_t> aNameOffsets;
-    std::vector<std::vector<unsigned char>> aGeometries;
+    std::vector<unsigned char> aGeometries;
     std::vector<uint64_t> aGeometryOffsets;
     uint64_t nBufferCount;
     OGREnvelope sMaxEnvelope;
+
+    void FlushArrays();
 
   public:
     OGRTileDBLayer(const char *pszFilename, const OGRwkbGeometryType eGType);
@@ -222,6 +224,7 @@ class OGRTileDBLayer final : public OGRLayer
 class OGRTileDBDataset final : public TileDBDataset
 {
     friend OGRTileDBLayer;
+    std::vector<std::unique_ptr<OGRLayer>> m_apoLayers{};
 
   public:
     OGRTileDBDataset();
