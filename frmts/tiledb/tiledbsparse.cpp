@@ -38,7 +38,7 @@
 /*                         OGRTileDBDataset()                           */
 /************************************************************************/
 
-OGRTileDBDataset::OGRTileDBDataset(const char *pszFilename)
+OGRTileDBDataset::OGRTileDBDataset()
 {
 }
 
@@ -54,15 +54,16 @@ OGRTileDBDataset::~OGRTileDBDataset()
 /*                                Open()                                */
 /************************************************************************/
 
-GDALDataset *OGRTileDBDataset::Open(GDALOpenInfo *poOpenInfo)
+GDALDataset *OGRTileDBDataset::Open(CPL_UNUSED GDALOpenInfo *poOpenInfo)
 
 {
+#if 0
     const char *pszConfig =
         CSLFetchNameValue(poOpenInfo->papszOpenOptions, "TILEDB_CONFIG");
 
     const char *pszTimestamp =
         CSLFetchNameValue(poOpenInfo->papszOpenOptions, "TILEDB_TIMESTAMP");
-
+#endif
     return nullptr;
 }
 
@@ -70,7 +71,7 @@ GDALDataset *OGRTileDBDataset::Open(GDALOpenInfo *poOpenInfo)
 /*                           TestCapability()                           */
 /************************************************************************/
 
-int OGRTileDBDataset::TestCapability(const char *pszCap)
+int OGRTileDBDataset::TestCapability(CPL_UNUSED const char *pszCap)
 
 {
     return TRUE;
@@ -80,9 +81,9 @@ int OGRTileDBDataset::TestCapability(const char *pszCap)
 /*                            ExecuteSQL()                             */
 /***********************************************************************/
 
-OGRLayer *OGRTileDBDataset::ExecuteSQL(const char *pszSQLCommand,
-                                       OGRGeometry *poSpatialFilter,
-                                       const char *pszDialect)
+OGRLayer *OGRTileDBDataset::ExecuteSQL(CPL_UNUSED const char *pszSQLCommand,
+                                       CPL_UNUSED OGRGeometry *poSpatialFilter,
+                                       CPL_UNUSED const char *pszDialect)
 {
     return nullptr;
 }
@@ -90,10 +91,10 @@ OGRLayer *OGRTileDBDataset::ExecuteSQL(const char *pszSQLCommand,
 /***********************************************************************/
 /*                           ICreateLayer()                        */
 /***********************************************************************/
-OGRLayer *OGRTileDBDataset::ICreateLayer(const char *pszName,
-                                         OGRSpatialReference *poSpatialRef,
-                                         OGRwkbGeometryType eGType,
-                                         char **papszOptions)
+OGRLayer *
+OGRTileDBDataset::ICreateLayer(CPL_UNUSED const char *pszName,
+                               CPL_UNUSED OGRSpatialReference *poSpatialRef,
+                               OGRwkbGeometryType eGType, char **papszOptions)
 {
     // TODO check access mode
     const char *pszBounds = CSLFetchNameValue(papszOptions, "bounds");
@@ -107,10 +108,10 @@ OGRLayer *OGRTileDBDataset::ICreateLayer(const char *pszName,
         CPLStringList aosBounds(CSLTokenizeString2(pszBounds, ",", 0));
         if (aosBounds.Count() == 4)
         {
-            poLayer->nXStart = CPLAtof(aosBounds[0]);
-            poLayer->nYStart = CPLAtof(aosBounds[1]);
-            poLayer->nXEnd = CPLAtof(aosBounds[2]);
-            poLayer->nYEnd = CPLAtof(aosBounds[3]);
+            poLayer->nXStart = CPLAtoGIntBig(aosBounds[0]);
+            poLayer->nYStart = CPLAtoGIntBig(aosBounds[1]);
+            poLayer->nXEnd = CPLAtoGIntBig(aosBounds[2]);
+            poLayer->nYEnd = CPLAtoGIntBig(aosBounds[3]);
         }
         else
         {
@@ -134,11 +135,10 @@ OGRLayer *OGRTileDBDataset::ICreateLayer(const char *pszName,
 /*                          Create()                                    */
 /************************************************************************/
 
-GDALDataset *OGRTileDBDataset::Create(const char *pszFilename, int nXSize,
-                                      int nYSize, int nBands,
-                                      GDALDataType eType, char **papszOptions)
+GDALDataset *OGRTileDBDataset::Create(const char *pszFilename,
+                                      CSLConstList papszOptions)
 {
-    auto poDS = new OGRTileDBDataset(pszFilename);
+    auto poDS = new OGRTileDBDataset();
     poDS->SetDescription(pszFilename);
 
     const char *pszConfig = CSLFetchNameValue(papszOptions, "TILEDB_CONFIG");
@@ -152,15 +152,6 @@ GDALDataset *OGRTileDBDataset::Create(const char *pszFilename, int nXSize,
         poDS->m_ctx.reset(new tiledb::Context());
     }
     return poDS;
-}
-
-GDALDataset *OGRTileDBDataset::CreateCopy(const char *pszFilename,
-                                          GDALDataset *poSrcDS, int bStrict,
-                                          char **papszOptions,
-                                          GDALProgressFunc pfnProgress,
-                                          void *pProgressData)
-{
-    return nullptr;
 }
 
 /************************************************************************/
@@ -179,7 +170,7 @@ OGRTileDBLayer::OGRTileDBLayer(const char *pszFilename,
 {
     this->poFeatureDefn->SetGeomType(eGType);
     this->poFeatureDefn->Reference();
-    OGRGeomFieldDefn *poGeomDefn = this->poFeatureDefn->GetGeomFieldDefn(0);
+    //OGRGeomFieldDefn *poGeomDefn = this->poFeatureDefn->GetGeomFieldDefn(0);
     // this can be configurable
     this->nBufferCount = 10000;
 
@@ -238,7 +229,7 @@ void OGRTileDBLayer::ResetReading()
 /*                         CreateField()                                */
 /************************************************************************/
 
-OGRErr OGRTileDBLayer::CreateField(OGRFieldDefn *poField, int bApproxOK)
+OGRErr OGRTileDBLayer::CreateField(OGRFieldDefn *poField, int /* bApproxOK*/)
 {
     OGRFieldDefn oFieldDefn(poField);
     poFeatureDefn->AddFieldDefn(&oFieldDefn);
@@ -249,9 +240,11 @@ OGRErr OGRTileDBLayer::CreateField(OGRFieldDefn *poField, int bApproxOK)
 /*                         CreateGeomField()                            */
 /************************************************************************/
 
-OGRErr OGRTileDBLayer::CreateGeomField(OGRGeomFieldDefn *poField, int bApproxOK)
+OGRErr OGRTileDBLayer::CreateGeomField(OGRGeomFieldDefn *poField,
+                                       int /* bApproxOK*/)
 {
     poFeatureDefn->AddGeomFieldDefn(std::move(poField));
+    return OGRERR_NONE;
 }
 
 /************************************************************************/
@@ -406,7 +399,7 @@ OGRErr OGRTileDBLayer::ICreateFeature(OGRFeature *poFeature)
 /*                         TestCapability()                             */
 /************************************************************************/
 
-int OGRTileDBLayer::TestCapability(const char *pszCap)
+int OGRTileDBLayer::TestCapability(const char * /*pszCap*/)
 {
     // override in dev as true for all
     return TRUE;

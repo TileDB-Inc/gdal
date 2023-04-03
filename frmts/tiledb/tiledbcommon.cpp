@@ -242,8 +242,7 @@ GDALDataset *TileDBDataset::Create(const char *pszFilename, int nXSize,
             return TileDBRasterDataset::Create(pszFilename, nXSize, nYSize,
                                                nBandsIn, eType, papszOptions);
         else
-            return OGRTileDBDataset::Create(pszFilename, nXSize, nYSize,
-                                            nBandsIn, eType, papszOptions);
+            return OGRTileDBDataset::Create(pszFilename, papszOptions);
     }
     catch (const tiledb::TileDBError &e)
     {

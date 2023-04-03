@@ -224,7 +224,7 @@ class OGRTileDBDataset final : public TileDBDataset
     friend OGRTileDBLayer;
 
   public:
-    OGRTileDBDataset(const char *pszFilename);
+    OGRTileDBDataset();
     ~OGRTileDBDataset();
     OGRLayer *ExecuteSQL(const char *pszSQLCommand,
                          OGRGeometry *poSpatialFilter,
@@ -235,14 +235,8 @@ class OGRTileDBDataset final : public TileDBDataset
                            OGRwkbGeometryType eGType = wkbUnknown,
                            char **papszOptions = nullptr) override;
     static GDALDataset *Open(GDALOpenInfo *);
-    static GDALDataset *Create(const char *pszFilename, int nXSize, int nYSize,
-                               int nBands, GDALDataType eType,
-                               char **papszOptions);
-    static GDALDataset *CreateCopy(const char *pszFilename,
-                                   GDALDataset *poSrcDS, int bStrict,
-                                   char **papszOptions,
-                                   GDALProgressFunc pfnProgress,
-                                   void *pProgressData);
+    static GDALDataset *Create(const char *pszFilename,
+                               CSLConstList papszOptions);
 };
 
 #endif  // TILEDB_HEADERS_H
